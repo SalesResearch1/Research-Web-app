@@ -1,0 +1,213 @@
+import React, { useState, useEffect } from "react";
+import { SafetyAnalysis } from "@/api/entities";
+import { User } from "@/api/entities";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AnimatePresence, motion } from "framer-motion";
+import { BarChart3, Info, AlertTriangle } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+
+import ReportGeneratorCard from "../components/analyses/ReportGeneratorCard";
+import HistoryFilters from "../components/history/HistoryFilters";
+import AnalysisCard from "../components/history/AnalysisCard";
+import ExportDialog from "../components/history/ExportDialog";
+import AnalysisDetailsDialog from "../components/history/AnalysisDetailsDialog";
+
+// Helper function to add delay between API calls
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Helper function to retry API calls with exponential backoff
+const retryApiCall = async (apiCall, maxRetries = 3, baseDelay = 1000) => {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error) {
+      if (error.response?.status === 429) {
+        // Rate limit exceeded, wait before retrying
+        const delayMs = baseDelay * Math.pow(2, attempt);
+        console.log(`Rate limit hit, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await delay(delayMs);
+
+        if (attempt === maxRetries - 1) {
+          console.warn("Rate limit exceeded, continuing without user data");
+          return null; // Return null for user data if we can't fetch it
+        }
+      } else {
+        throw error;
+      }
+    }
+  }
+};
+
+// Helper function to create the URL for the new page
+const createPageUrl = (path) => {
+  return `/${path}`;
+};
+
+export default function SafetyAnalyses() {
+  const [analyses, setAnalyses] = useState([]);
+  const [filteredAnalyses, setFilteredAnalyses] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedIndustry, setSelectedIndustry] = useState("all");
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [selectedAnalysis, setSelectedAnalysis] = useState(null);
+  const [user, setUser] = useState(null);
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const userData = await retryApiCall(() => User.me());
+        setUser(userData);
+      } catch (error) {
+        console.warn("Failed to fetch user data:", error);
+        setUser(null);
+      }
+      
+      loadAnalyses();
+    };
+    
+    fetchData();
+  }, []);
+
+  useEffect(() => {
+    let filtered = analyses;
+
+    if (searchQuery) {
+      filtered = filtered.filter(analysis => 
+        analysis.company_name.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
+
+    if (selectedIndustry !== "all") {
+        filtered = filtered.filter(analysis => analysis.industry === selectedIndustry);
+    }
+
+    setFilteredAnalyses(filtered);
+  }, [analyses, searchQuery, selectedIndustry]);
+
+  const loadAnalyses = async () => {
+    setIsLoading(true);
+    try {
+      const data = await retryApiCall(() => SafetyAnalysis.list("-created_date", 5000));
+      setAnalyses(data || []);
+    } catch (error) {
+      console.error("Error loading analyses:", error);
+      setAnalyses([]);
+    }
+    setIsLoading(false);
+  };
+
+  const handleReportGenerated = () => {
+    loadAnalyses();
+  };
+
+  const getUniqueIndustries = () => [...new Set(analyses.map(a => a.industry).filter(Boolean))];
+
+  const handleDelete = async (analysisId) => {
+    try {
+      await SafetyAnalysis.delete(analysisId);
+      loadAnalyses();
+    } catch (error) {
+      console.error("Error deleting analysis:", error);
+      alert("Failed to delete analysis. Please try again.");
+    }
+  };
+  
+  const handleViewDossier = (id) => {
+    window.location.href = createPageUrl(`ClientDossier?id=${id}`);
+  };
+
+  const handleViewDetails = (analysis) => {
+    setSelectedAnalysis(analysis);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="p-4 sm:p-8 max-w-7xl mx-auto">
+        <div className="mb-6 sm:mb-8">
+          <h1 className="text-2xl sm:text-4xl font-bold text-slate-900 mb-2">Safety Analyses</h1>
+          <p className="text-slate-600 text-sm sm:text-lg">
+            {user ? `Welcome back, ${user.full_name.split(' ')[0]}! ` : ''}
+            Generate AI-powered safety reports and review your research history.
+          </p>
+        </div>
+
+        <Alert className="mb-6 sm:mb-8 bg-amber-50 border-amber-200 text-amber-900">
+          <AlertTriangle className="h-4 w-4 !text-amber-600" />
+          <AlertTitle className="font-semibold">AI-Powered Analysis Disclaimer</AlertTitle>
+          <AlertDescription>
+            The dossiers are generated by an AI and may contain inaccuracies or omissions. Always verify critical information from primary sources before making business decisions.
+          </AlertDescription>
+        </Alert>
+
+        <div className="mb-6 sm:mb-8">
+          <ReportGeneratorCard onReportGenerated={handleReportGenerated} />
+        </div>
+
+        <h2 className="text-xl sm:text-2xl font-bold text-slate-800 mb-4">Analysis History</h2>
+        
+        <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs sm:text-sm rounded-lg p-3 mb-4 flex items-center gap-3">
+          <Info className="w-5 sm:w-5 h-4 sm:h-5 flex-shrink-0" />
+          <span>Showing up to 5000 most recent analyses. Use the filters to refine the results.</span>
+        </div>
+
+        <HistoryFilters 
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          selectedIndustry={selectedIndustry}
+          setSelectedIndustry={setSelectedIndustry}
+          industries={getUniqueIndustries()}
+          totalCount={filteredAnalyses.length}
+          onExport={() => setShowExportDialog(true)}
+        />
+
+        {isLoading ? (
+            <p>Loading analyses...</p>
+        ) : (
+            <>
+                <div className="grid gap-6">
+                    <AnimatePresence>
+                        {filteredAnalyses.map((analysis) => (
+                        <AnalysisCard
+                            key={analysis.id}
+                            analysis={analysis}
+                            onDelete={handleDelete}
+                            user={user}
+                            onView={handleViewDetails}
+                            onViewDossier={handleViewDossier}
+                        />
+                        ))}
+                    </AnimatePresence>
+                </div>
+
+                {filteredAnalyses.length === 0 && !isLoading && (
+                <Card className="bg-white shadow-sm border-slate-200 mt-8">
+                    <CardContent className="p-12 text-center">
+                    <BarChart3 className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold text-slate-900 mb-2">No analyses found</h3>
+                    <p className="text-slate-600">
+                        {searchQuery || selectedIndustry !== "all" 
+                        ? "Try adjusting your search or filter criteria"
+                        : "Generate your first AI report to get started"}
+                    </p>
+                    </CardContent>
+                </Card>
+                )}
+            </>
+        )}
+        
+        <ExportDialog 
+          isOpen={showExportDialog}
+          onClose={() => setShowExportDialog(false)}
+          data={filteredAnalyses}
+        />
+        <AnalysisDetailsDialog 
+            analysis={selectedAnalysis}
+            onClose={() => setSelectedAnalysis(null)}
+        />
+      </div>
+    </div>
+  );
+}
